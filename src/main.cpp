@@ -1,23 +1,31 @@
 #include <Arduino.h>
+#include <FormattingSerialDebug.h>
 #include "EEPROM.h"
-int addr = 0;
+#define EEPROM_ADDR 0;
 #define EEPROM_SIZE 64
 
 #include <Encoder.h>
-Encoder enc(5, 6);
+#define ENCODER_A 2
+#define ENCODER_B 3
+Encoder enc(ENCODER_A, ENCODER_B);
 long encPos  = -999;
+
+#define HEATER 3
+#define HEATER_FAN 4
+#define VENTING_FAN 5
 
 #include <Wire.h> 
 #include <LiquidCrystal_I2C.h>
-#include <LiquidMenu.h>
-LiquidCrystal_I2C lcd(0x27,20,4);  // set the LCD address to 0x27 for a 16 chars and 2 line display
+//#include <LiquidMenu.h>
+#define LCD_BACKLIGHT 6
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
 //temp & humidity
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
-#define DHTPIN 2
-#define DHTTYPE    DHT11     // DHT 11
-DHT dht(DHTPIN, DHTTYPE);
+#define SENSOR 2
+DHT dht(SENSOR, DHT11);
+float humidity,temperature;
 
 #include <QuickPID.h>
 #define PIN_INPUT 0
@@ -27,7 +35,75 @@ float Kp = 2, Ki = 5, Kd = 1;
 QuickPID pid(&input, &output, &setpoint);
 
 #include <sTune.h>
-sTune tuner = sTune(); // for softPWM and tempLimit
+#define TUNE_TEMP_LIMIT 100
+#define TUNE_TIMER 30
+#define TUNE_SAMPLES 10
+#define TUNE_PWM_DURATION 50
+sTune tuner = sTune();
+
+
+void update() {
+  humidity = dht.readHumidity();
+  temperature = dht.readTemperature();
+
+  input = analogRead(PIN_INPUT);
+  pid.Compute();
+  analogWrite(PIN_OUTPUT, output);
+
+}
+
+void tune(int x, int y) {
+  float optimumOutput = tuner.softPwm(HEATER, input, output, setpoint, TUNE_PWM_DURATION, 0); // ssr mode
+  if (pid.Compute()) {
+    tuner.plotter(input, optimumOutput, setpoint, 0.5f, 3); // output scale 0.5, plot every 3rd sample
+  }
+}
+
+void save() {
+  int addr = EEPROM_ADDR;
+  EEPROM.put(addr, Kp);
+  DEBUG("addr %i %f", addr, Kp);
+  EEPROM.put(addr += sizeof(float), Ki);
+  DEBUG("addr %i %f", addr, Ki);
+  EEPROM.put(addr += sizeof(float), Kd);
+  DEBUG("addr %i %f", addr, Kd);
+  EEPROM.commit();
+}
+
+void load() {
+  int addr = EEPROM_ADDR;
+  EEPROM.get(addr, Kp);
+  DEBUG("addr %i %f", addr, Kp);
+  EEPROM.get(addr += sizeof(float), Ki);
+  DEBUG("addr %i %f", addr, Ki);
+  EEPROM.get(addr += sizeof(float), Kd);
+  DEBUG("addr %i %f", addr, Kd);
+}
+
+void setup() {
+  Serial.begin(9600);
+  //eeprom
+  EEPROM.begin(EEPROM_SIZE);
+  load();
+
+  //lcd
+  lcd.init();
+  lcd.backlight();
+  Serial.begin(9600);
+
+  //dht
+  dht.begin();
+
+  //pid
+  input = analogRead(PIN_INPUT);
+  setpoint = 100;
+  pid.SetTunings(Kp, Ki, Kd);
+  pid.SetMode(pid.Control::automatic);
+
+  //tuner
+  tuner.Configure(0, 0, 0, 0, TUNE_TIMER, 0, TUNE_SAMPLES);
+  tuner.SetEmergencyStop(TUNE_TEMP_LIMIT);
+}
 
 void loop() {
   // encoder
@@ -49,69 +125,4 @@ void loop() {
       lcd.write(Serial.read());
     }
   }
-
-  //dht
-  dht.begin();
-
-  //pid
-  input = analogRead(PIN_INPUT);
-  pid.Compute();
-  analogWrite(PIN_OUTPUT, output);
-}
-
-void setup() {
-  //eeprom
-  EEPROM.begin(EEPROM_SIZE);
-  load();
-
-  Serial.println(" bytes read from Flash . Values are:");
-  for (int i = 0; i < EEPROM_SIZE; i++) {
-    Serial.print(byte(EEPROM.read(i)));
-    Serial.print(" ");
-  }
-
-  //lcd
-  lcd.init();
-  lcd.backlight();
-  Serial.begin(9600);
-
-  //dht
-  float h = dht.readHumidity();
-  float t = dht.readTemperature();
-
-  //pid
-  input = analogRead(PIN_INPUT);
-  setpoint = 100;
-  pid.SetTunings(Kp, Ki, Kd);
-  pid.SetMode(pid.Control::automatic);
-
-  //tuner
-  tuner.Configure(0, 0, 0, 0, testTimeSec, 0, samples);
-  tuner.SetEmergencyStop(tempLimit);
-}
-
-void loop() {
-  // put your main code here, to run repeatedly:
-}
-
-// put function definitions here:
-int myFunction(int x, int y) {
-  float optimumOutput = tuner.softPwm(relayPin, input, output, setpoint, outputSpan, 0); // ssr mode
-  if (pid.Compute()) {
-    if (!digitalRead(drdyPin)) Input = maxthermo.readThermocoupleTemperature();
-    tuner.plotter(input, optimumOutput, setpoint, 0.5f, 3); // output scale 0.5, plot every 3rd sample
-  }
-}
-
-int save() {
-  EEPROM.put(addr, Kp);
-  EEPROM.put(addr + sizeof(float), Ki);
-  EEPROM.put(addr + (sizeof(float) * 2), Kp);
-  EEPROM.commit();
-}
-
-int load() {
-  EEPROM.get(addr, Kp);
-  EEPROM.get(addr + sizeof(float), Ki);
-  EEPROM.get(addr + (sizeof(float) * 2), Kd);
 }
